@@ -1,0 +1,198 @@
+'''
+Machine Learning 
+
+
+1. Handling class imbalance problem in R:
+prop.table(table(data$y)) # gives percentage of data # barplot() 
+class imbalance: percentage of one of the outcome is much much larger than another.
+Using Random Forest
+'''
+
+library(randomForest)
+rftrain <- randomForest(y~., data = train) 
+
+# evaluation
+library(caret)
+confusionMatrix(predict(reftrain, test), test$y, positive = ‘1’)
+# in result, No information rate indicates the observed class has larger 0s rather than 1s
+# This means, if NIR = 80%, we don't bother to run any model, just predict
+# all outcomes to be negative, we'll be about 80% right. So if I get a model
+# accuracy less than 80%, it doesn't really make sense to even make this model??
+
+# Sensitivity - how accurate can we predict a positive outcome. percentage of True postive
+# Specificity - how accurate can we predict a negative outcome. percentage of true negative
+# If we are predicting rare outcomes like true positive, we should focus at least the sensitivity metric
+
+
+# Try to solve this by oversampling
+library(ROSE)
+# Randomly Over Sampling Examples
+over<- ovun.sample(y~.,data = train, method = "over", N = 376)$data
+table(over$y)
+rfover <- randomForest(y~., data = over)
+
+# now try under sampling 
+under<- ovun.sample(y~.,data = train, method = "under", N = 194)$data
+rfunder <- randomForest(y~., data = under)
+
+# both 
+both <- ovun.sample(y~., data = train, method = "both",
+	p =0.5,
+	seed = 222,
+	N = 285)$data
+
+
+## Synthetic Data
+rose <- ROSE(y~., data = train, N = 500, seed = 111)$data
+table(rose$y)
+summary(rose)
+
+
+
+'''
+2. NaiveBayes classification with R
+'''
+library(naivebayes) 
+library(psych)
+
+xtabs(~y+x1, data = data) # this does cross frequency table 
+
+# to develop a naive bayes model, we need to make sure independent variables are not highly correlated
+# visualization 
+pairs.panels(data[1])
+data %>% ggplot(aes(x= admit, y =gre, fill = admit)) +
+			geom_boxplot() + ggtitle("Box plot")
+
+data %>% ggplot(aes(x=gre, fill = admit)) +
+			geom_density(alpha = 0.8, # how transparent plot is
+				color = 'black') +
+				ggtitle("Density Plot")
+
+# data partition 
+ind <- sample(2, nrow(data), replace = T, prob = c(0.8, 0.2))
+train <- data[ind == 1, ]
+test <- data[ind ==2,]
+
+# Naive Bayes Model
+'''
+p(A|B) = P(A)*P(B|A)/P(A)   -- assuming P(A) and P(B) are independent
+'''
+model <- naive_bayes(y~., data = train)
+train %>% filter(y =="0") %>% summarise(mean(gre), sd(gre))
+
+plot(model)
+
+# Prediction 
+p <- predict(model, train, type = 'prob')
+head(cbind(p,train))
+
+
+# Conduaion Matrix
+p1 <- predict(model, train)
+(tab1 <- table(p1, train$y))
+
+# to refine the model perfromance, we may want to add 
+# 'useKernel = T ' inside this model. 
+# if works well if the numerical variables are not normally distribtued
+
+
+
+'''
+3. Decision Tree in R
+'''
+
+# Decision tree with party
+library(party)
+tree <- ctree(y~ x1+x2+x3, data = train)
+plot(tree) # upside down tree with leaves at the bottom
+
+tree <- ctree(y~ x1+x2+x3, data = train,
+	controls = ctree_control(minicriterion =0.9, # this is the confidence level
+		minisplit = 500 # this means a branch will only split when sample size is above 500
+		))
+
+## predict 
+predict(tree, test, type = 'prob')
+predict(tree, test)
+
+
+## decision tree with rpart
+library(rpart)
+tree1 <- rpart(y~x1+x2+x3, train)
+library(rpart.plot)
+rpart.plot(tree1, extra =c(1,2,3,4))
+
+# prediction 
+predict(tree1, test)
+
+# Missclassification error
+tab <- table(predict(tree), train$y)
+
+
+
+'''
+4. Random Forest
+'''
+
+# Random forest is developed by aggregating trees
+# can be used for classification or regression
+# handles well on overfitting
+# can deal with large number of features
+# can help on feature selection based on importance
+# user friendly - only 2 free parameters:
+     # trees - ntree, default at 500
+     # variables randomly sampled as candidates at each split - mtry, 
+     # default is sq.root(p), p = # of features for classification, or p/3 for regression
+
+# 3 steps 
+# 1. Draw ntree boostrap samples
+# 2. For each bootsrap sample, grow un-pruned tree by choosing best split based on a random sample of mtry predictions at each node
+# 3. Predict new data using majority votes for classification and average for regression based on ntree trees. 
+
+library(randomForest)
+rf <- randomForest(y~., data = train)
+print(rf)
+attributes(rf)
+
+# prediction and confusion matrix
+library(caret)
+predict(rf,train)
+p1 <- predict(rf, train)
+confusionMatrix(p1,train$y)
+
+# Out of bag (OOB) error
+# For each bootstrap iteration and related tree,
+# prediciton error using data not in the boostrap sample
+# (also called out of bag or OOB data) is estimated. 
+# * classification - Accuracy
+# * regression - r-sq & RMSE
+
+p2 <- predict(rf, test)
+confusionMatrix(p2, test$y)
+
+# Error rate
+plot(rf)
+
+# Tunning the random forest model
+t <- tuneRF(train[,-22], train[,22], stepFactor =0.5,
+	plot = TRUE, ntree = 300, trace = TRUE, improve = 0.05) 
+
+# No. of nodes for the trees
+hist(treesize(rf), main = "title", col = "green")
+	
+### Variable importance
+
+varImpPlot(rf) # 1. how worse the model performs without each variable
+               # 2. How pure the nodes are at the end of the tree without each variable
+varImpPlot(rf, sort = T, n.var =10, main = "title")
+importance(rf)
+varUsed(rf)
+
+## Partial dependence plot
+partialPlot(rf, train, ASTV, "1")
+
+# Extract individal tress
+getTree(rf,1, labelVar = TRUE)
+
+# Multi-dimensional Scaling Plot of Proximity Matrix
+MDSplot(rf, train$y)               
