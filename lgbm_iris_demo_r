@@ -1,0 +1,35 @@
+library(lightgbm)
+data("iris")
+
+#convert factors to numeric
+# They must be starting from number 0 to use multiclass
+str(iris)
+iris$Species <- as.numeric(as.factor(iris$Species)) - 1
+
+
+# We cut the data set into 80% train and 20% validation
+# The 10 last samples of each class are for validation
+
+tr<-sample(150,120, replace = FALSE)
+train <- as.matrix(iris[tr,])
+test <- as.matrix(iris[-tr,])
+
+dtrain <- lgb.Dataset(data = train[, 1:4], label = train[, 5])
+dtest <- lgb.Dataset.create.valid(dtrain, data = test[, 1:4], label = test[, 5])
+valids <- list(test = dtest)
+
+params <- list(objective = "multiclass", metric = "multi_error", num_class = 3)
+model <- lgb.train(params = params,
+                   data = dtrain,
+                   nrounds = 100,
+                   valids = valids,
+                   min_data = 1,
+                   learning_rate = 1,
+                   early_stopping_rounds = 10)
+
+# possibility for each class by cols:
+my_preds <- predict(model, test[, 1:4], reshape = TRUE)
+# We can also get the predicted scores before the Sigmoid/Softmax application
+my_preds <- predict(model, test[, 1:4], rawscore = TRUE, reshape = TRUE)
+# We can also get the leaf index
+my_preds <- predict(model, test[, 1:4], predleaf = TRUE)
