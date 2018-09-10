@@ -1,0 +1,108 @@
+library(readr)
+library(xgboost)
+library(sigr)
+library(WVPlots)
+library(vtreat)
+library(caret)
+library(anytime)
+
+
+# Prepare the dataset
+raw_dat <- read_csv("Ooutfit_7_Sprint/Sprint_1/data_s_c/combined.csv")
+raw_dat <- raw_dat %>% mutate(Date_time = anytime(DateTime), date = anydate(DateTime)) 
+sl_dat <- raw_dat %>% select(Click, Day,Hour,date, AppVersion, DeviceType,  DeviceConnection, DeviceConnectionSpeed, OsVersion,
+                             SectionId, SiteId, AdType) %>% 
+  mutate(OsVersion = ifelse(substr(OsVersion, 0, 1) == "A", 7, substr(OsVersion, 0, 1)),
+         AppVersion = substr(AppVersion,0, 1))
+
+pd_dat <- sl_dat %>% filter(!is.na(Click))
+
+dTrain <- pd_dat %>% filter(date %in% c(as.Date("2018-07-25"),as.Date("2018-07-26"),as.Date("2018-07-27"),as.Date("2018-07-28"))) %>% select(-date)
+dTest <- pd_dat %>% filter(date %in% c(as.Date("2018-07-29"),as.Date("2018-07-30"))) %>% select(-date)
+
+outcome <- 'Click'
+target <- 1
+shouldBeCategorical <- c("Day","Hour","AppVersion","DeviceType","DeviceConnection","DeviceConnectionSpeed","OsVersion","AdType")
+tooDetailed <- c("SectionId","SiteId")
+
+
+for (v in shouldBeCategorical) {
+  dTrain[[v]] <- as.factor(dTrain[[v]])
+}
+
+vars <- setdiff(colnames(dTrain), c(outcome, tooDetailed))
+summary(dTrain)
+
+
+
+## Design cross-validated modeling experiment: 
+
+set.seed(100)
+crossValPlan <- vtreat::kWayStratifiedY(nRows = nrow(dTrain), # vtreat - a statistically sound 'data.frame' Processor/Conditioner
+                                        nSplits = 10, # Number of groups to split into
+                                        dframe = dTrain, # original data frame
+                                        y = dTrain[[outcome]])
+
+evaluateModelingProcedure <- function(xMatrix, outcomeV, crossValPlan){
+  preds <- rep(NA_real_, nrow(xMatrix))
+  for (ci in crossValPlan){
+    nrounds <- 1000
+    cv <- xgb.cv( # Cross validation function of xgboost
+      data = xMatrix[ci$train, ], # can be xgb.Dmatrix, matrix, or dgCMatrix
+      label = outcomeV[ci$train],  # vector of response values - should be provided only if data is an R-matrix
+      objective = 'binary:logistic', # customised objective function, returns gradient and second order gradient with given prediction and dtrain
+      nrounds = nrounds, # max number of iterations
+      verbose = 0, # boolean, TRUE or FALSE - print the statistics during the process
+      nfold = 5 # the original dataset is randomly partitioned into nfold equal size subsamples
+    )
+    # nrounds <- which.min(cv$evaluation_lg$test_rmse_mean) # Regression
+    # nrounds <- which.min(cv$evaluation_log$test_error_mean) # classification
+    model <- xgboost(data = xMatrix[ci$train,],
+                     label = outcomeV[ci$train],
+                     objective = 'binary:logistic',
+                     nrounds = nrounds,
+                     verbose = 0)
+    preds[ci$app]<- predict(model, xMatrix[ci$app,])
+  }
+  preds
+}
+
+# prefered way to encode data is to use the 'vtreat' package int the "no variable mode" 
+set.seed(2000)
+tplan <- vtreat::designTreatmentsZ( # design variable treatment with no outcome variable
+  dframe = dTrain, # data frame to learn treatments from (training data)
+  varlist = vars, # names of columns to treat (effective variables)
+  minFraction = 0, # optional minimum frequency a categorical level must have to be converted to an indicator column.
+  verbose = FALSE # Boolean, TRUE of FALSE - print the statistics during the process
+)
+
+sf <- tplan$scoreFrame
+newvars <- sf$varName[sf$code %in% c("lev","clean","isBAD")]
+trainVtreat <- as.matrix(vtreat::prepare(tplan, 
+                                         dTrain, 
+                                         varRestriction = newvars))
+
+
+
+
+print(dim(trainVtreat))
+print(colnames(trainVtreat))
+
+dTrain$predVtreatZ <- evaluateModelingProcedure(trainVtreat, 
+                                                dTrain[[outcome]] == target, 
+                                                crossValPlan
+)
+
+sigr::permTestAUC(d = dTrain,
+                  modelName = 'predVtreatZ',
+                  yName = outcome, 
+                  yTarget = target)
+
+WVPlots::ROCPlot(frame = dTrain,
+                 xvar = "predVtreatZ",
+                 truthVar = outcome, 
+                 truthTarget = target, 
+                 title = "vtreat encoder performance",
+                 estimate_sig = TRUE)
+
+
